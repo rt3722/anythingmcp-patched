@@ -90,6 +90,86 @@ RUN set -eux; \
     echo "$target" > /etc/anythingmcp-patched.path; \
     echo "PATCH OK: ${target}"
 
+# ── DIAGNOSTIC (TEMPORARY) ───────────────────────────────────────────────────
+# Probe: does the connecting MCP client send `_meta.progressToken` on
+# tools/call? If it does, this server may legally emit notifications/progress
+# during long calls; if it does not, a spec-compliant server must stay silent.
+# This step only LOGS — it changes no behaviour. Delete this whole RUN block
+# (and this comment) once the question is answered.
+RUN set -eux; \
+    \
+    # ---- 1. Locate the compiled MCP endpoint controller --------------------
+    # This is the layer that holds the JSON-RPC request context. Note that
+    # DynamicMcpTools.executeTool() is NOT a usable probe point: it receives
+    # only (toolName, params, identityContext) and never sees `_meta`.
+    matches="$(find / -name 'mcp-endpoint.controller.js' -not -path '*/node_modules/*' -type f 2>/dev/null)"; \
+    echo "mcp-endpoint.controller.js candidates:"; echo "$matches"; \
+    count="$(printf '%s\n' "$matches" | grep -c . || true)"; \
+    if [ "$count" -ne 1 ]; then \
+        echo "FATAL: expected exactly 1 mcp-endpoint.controller.js outside node_modules, found ${count}" >&2; \
+        exit 1; \
+    fi; \
+    target="$matches"; \
+    [ -f "$target" ] || { echo "FATAL: '${target}' is not a regular file" >&2; exit 1; }; \
+    echo "target: ${target}"; \
+    \
+    # ---- 2. Assert the anchor is present exactly once ----------------------
+    # The `const handler = ` prefix is load-bearing: a bare `async (args) => {`
+    # ALSO matches the kg_how_to_obtain callback later in this same file, and
+    # patching that one would probe the wrong call path. Fixed-string (-F)
+    # matching avoids any regex interpretation of the parens and braces.
+    before="$(grep -cF 'const handler = async (args) => {' "$target" || true)"; \
+    if [ "$before" -ne 1 ]; then \
+        echo "FATAL: expected exactly 1 'const handler = async (args) => {' in ${target}, found ${before}" >&2; \
+        echo "--- all 'async (args)' occurrences ---" >&2; \
+        grep -nF 'async (args)' "$target" >&2 || true; \
+        exit 1; \
+    fi; \
+    echo "--- BEFORE ---"; \
+    grep -nF 'const handler = async (args) => {' "$target"; \
+    \
+    # ---- 3. Bind the SDK's RequestHandlerExtra and log ONLY its `_meta` -----
+    # Upstream declares the callback as `async (args)`, discarding the second
+    # argument. @modelcontextprotocol/sdk 1.29.0 passes RequestHandlerExtra
+    # there, which carries `_meta` (the JSON-RPC params._meta envelope, where
+    # progressToken lives).
+    #
+    # SECURITY: that same object also carries `authInfo` (the validated OAuth
+    # access token) and `requestInfo` (the raw HTTP request, including the
+    # Authorization header). A blanket JSON.stringify(extra) would write both
+    # to the log. Only `_meta` is read below — never `extra` as a whole.
+    # The try/catch keeps a diagnostic from ever failing a real tool call.
+    sed -i 's/const handler = async (args) => {/const handler = async (args, extra) => { try { console.log("AMCP_META_PROBE", JSON.stringify({ tool: tool.name, hasMeta: extra?._meta !== undefined, _meta: extra?._meta ?? null })); } catch (e) { console.log("AMCP_META_PROBE_ERR", String(e)); }/' "$target"; \
+    \
+    # ---- 4. Assert the patch landed and nothing was left behind ------------
+    after="$(grep -cF 'const handler = async (args, extra) => {' "$target" || true)"; \
+    if [ "$after" -ne 1 ]; then \
+        echo "FATAL: patched handler signature not found exactly once in ${target} (found ${after})" >&2; \
+        exit 1; \
+    fi; \
+    probe="$(grep -cF 'AMCP_META_PROBE' "$target" || true)"; \
+    if [ "$probe" -ne 1 ]; then \
+        echo "FATAL: expected the probe on exactly 1 line, found ${probe}" >&2; \
+        exit 1; \
+    fi; \
+    leftover="$(grep -cF 'const handler = async (args) => {' "$target" || true)"; \
+    if [ "$leftover" -ne 0 ]; then \
+        echo "FATAL: ${leftover} unpatched handler signature(s) remain in ${target}" >&2; \
+        exit 1; \
+    fi; \
+    \
+    # ---- 5. Refuse to ship a broken or leaky bundle ------------------------
+    node --check "$target"; \
+    if grep -nE 'AMCP_META_PROBE.*(authInfo|requestInfo|authorization|Bearer|sessionId)' "$target"; then \
+        echo "FATAL: probe line references credential-bearing fields" >&2; \
+        exit 1; \
+    fi; \
+    \
+    echo "--- AFTER ---"; \
+    grep -nF 'AMCP_META_PROBE' "$target"; \
+    echo "$target" > /etc/anythingmcp-probe.path; \
+    echo "PROBE OK: ${target}"
+
 # Drop back to the unprivileged user the upstream runner stage sets.
 USER appuser
 

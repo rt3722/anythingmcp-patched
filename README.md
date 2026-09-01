@@ -96,6 +96,39 @@ docker run --rm --entrypoint sh anythingmcp-patched -c \
   'grep -n "timeout:" "$(cat /etc/anythingmcp-patched.path)"'
 ```
 
+## Diagnostic probe (temporary)
+
+The image currently carries a second, **temporary** patch step answering one
+question: *does the connecting MCP client send `_meta.progressToken` on
+`tools/call`?* If it does, this server may legally emit
+`notifications/progress` during long calls; if it does not, a spec-compliant
+server must stay silent, and no amount of streaming or keepalives will hold the
+connection open.
+
+It patches the compiled `mcp-endpoint.controller.js` to bind the MCP SDK's
+`RequestHandlerExtra` (the second tool-callback argument, which upstream
+discards) and log only its `_meta`:
+
+```
+AMCP_META_PROBE {"tool":"...","hasMeta":true,"_meta":{"progressToken":"..."}}
+```
+
+Read it from the Railway logs with `grep AMCP_META_PROBE` after making one tool
+call. `hasMeta:false` or a `_meta` without `progressToken` means progress
+notifications are not available on that call.
+
+`DynamicMcpTools.executeTool()` is deliberately **not** the probe point: it
+receives only `(toolName, params, identityContext)` and never sees `_meta`.
+
+**This step only logs — it changes no behaviour.** Delete the `DIAGNOSTIC
+(TEMPORARY)` `RUN` block from the `Dockerfile` once the question is answered.
+
+> **Note on what is logged.** Only the `_meta` envelope is read. The same
+> `extra` object also carries `authInfo` (the validated OAuth access token) and
+> `requestInfo` (the raw HTTP request, including the `Authorization` header);
+> neither is referenced, and the build asserts the probe line mentions no
+> credential-bearing field before the image ships.
+
 ## Upstream
 
 - Project: <https://github.com/HelpCode-ai/anythingmcp> (AGPL-3.0-only)
