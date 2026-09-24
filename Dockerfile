@@ -26,7 +26,11 @@
 # those are deliberately left alone.
 # =============================================================================
 
-FROM helpcodeai/anythingmcp:latest
+# Pinned to the exact upstream build that has been running in production since
+# 2026-09-01, so rebuilding this repo never silently upgrades AnythingMCP (and
+# its DB migrations). Bump deliberately; every patch step below re-verifies its
+# anchor and fails the build if upstream moved it.
+FROM helpcodeai/anythingmcp:latest@sha256:d029b2c4735b9d17f5833e042fbf2343d6138edb1410c95e870b39973fdfbc11
 
 # Upstream's final stage ends on `USER appuser`; become root to edit the bundle.
 USER root
@@ -170,11 +174,30 @@ RUN set -eux; \
     echo "$target" > /etc/anythingmcp-probe.path; \
     echo "PROBE OK: ${target}"
 
+# ── OpenAPI importer: resolve anyOf/oneOf/$ref types ─────────────────────────
+# Upstream flattenSchema() imports any body property without a top-level
+# `type` as 'string'. FastAPI/pydantic specs (Nansen) wrap optional fields in
+# `anyOf`, so `filters` (object), `order_by` (array), booleans and numbers all
+# became strings, and MCP clients sent them as JSON text that the API rejects.
+# See patches/openapi-anyof-types.js. Only affects future imports/refreshes;
+# tools already in the DB must be corrected separately (done 2026-09-24).
+COPY patches/openapi-anyof-types.js /tmp/openapi-anyof-types.js
+RUN set -eux; \
+    matches="$(find / -name 'openapi.parser.js' -not -path '*/node_modules/*' -type f 2>/dev/null)"; \
+    count="$(printf '%s\n' "$matches" | grep -c . || true)"; \
+    if [ "$count" -ne 1 ]; then \
+        echo "FATAL: expected exactly 1 openapi.parser.js outside node_modules, found ${count}" >&2; \
+        exit 1; \
+    fi; \
+    node /tmp/openapi-anyof-types.js "$matches"; \
+    node --check "$matches"; \
+    rm /tmp/openapi-anyof-types.js
+
 # Drop back to the unprivileged user the upstream runner stage sets.
 USER appuser
 
 LABEL org.opencontainers.image.title="anythingmcp-patched" \
-      org.opencontainers.image.description="AnythingMCP with a configurable REST connector timeout (CONNECTOR_TIMEOUT_MS)." \
+      org.opencontainers.image.description="AnythingMCP with a configurable REST connector timeout (CONNECTOR_TIMEOUT_MS) and anyOf-aware OpenAPI import." \
       org.opencontainers.image.base.name="docker.io/helpcodeai/anythingmcp:latest" \
       org.opencontainers.image.source="https://github.com/rt3722/anythingmcp-patched"
 
