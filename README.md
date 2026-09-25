@@ -26,6 +26,14 @@ This image rewrites that in the compiled `rest.engine.js` to:
 timeout: Number(process.env.CONNECTOR_TIMEOUT_MS || 30000)
 ```
 
+### Per-request nonce auth (GMGN)
+
+`patches/request-nonce.js` wraps the REST engine's axios call so requests to
+hosts in `NONCE_AUTH_HOSTS` (default `openapi.gmgn.ai`) get a fresh `timestamp`
+(unix seconds) and `client_id` (UUID) query param on every attempt, and send
+array query params as repeated keys. GMGN rejects requests without these, and
+AnythingMCP's static auth can't provide them. Other hosts are untouched.
+
 ## Why
 
 The 30 000 ms ceiling is not adjustable. It is not a connector setting, and

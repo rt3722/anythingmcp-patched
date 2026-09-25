@@ -113,11 +113,23 @@ RUN set -eux; \
     node --check "$matches"; \
     rm /tmp/openapi-anyof-types.js
 
+# ── REST engine: per-request timestamp + client_id (GMGN) ───────────────────
+# GMGN's OpenAPI requires a fresh unix `timestamp` (±5s) and a single-use
+# `client_id` UUID on every request, which static connector auth can't supply.
+# See patches/request-nonce.js. Scoped to hosts in NONCE_AUTH_HOSTS
+# (default openapi.gmgn.ai); all other connectors are unaffected.
+COPY patches/request-nonce.js /tmp/request-nonce.js
+RUN set -eux; \
+    target="$(cat /etc/anythingmcp-patched.path)"; \
+    node /tmp/request-nonce.js "$target"; \
+    node --check "$target"; \
+    rm /tmp/request-nonce.js
+
 # Drop back to the unprivileged user the upstream runner stage sets.
 USER appuser
 
 LABEL org.opencontainers.image.title="anythingmcp-patched" \
-      org.opencontainers.image.description="AnythingMCP with a configurable REST connector timeout (CONNECTOR_TIMEOUT_MS) and anyOf-aware OpenAPI import." \
+      org.opencontainers.image.description="AnythingMCP with a configurable REST connector timeout (CONNECTOR_TIMEOUT_MS), anyOf-aware OpenAPI import, and per-request nonce auth for GMGN." \
       org.opencontainers.image.base.name="docker.io/helpcodeai/anythingmcp:latest" \
       org.opencontainers.image.source="https://github.com/rt3722/anythingmcp-patched"
 
