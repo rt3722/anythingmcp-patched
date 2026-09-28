@@ -137,11 +137,28 @@ RUN set -eux; \
     node --check "$target"; \
     rm /tmp/sse-collapse.js
 
+# ── MCP endpoint: heartbeat during long tool calls ─────────────────────────
+# Some clients (Grok) drop a tools/call after ~30s of silence; Nansen's expert
+# agent takes 45-110s. Sends notifications/progress (or notifications/message
+# when the client sent no progressToken) every MCP_HEARTBEAT_MS (default
+# 10000, 0 disables) while a tool runs. See patches/tool-heartbeat.js.
+COPY patches/tool-heartbeat.js /tmp/tool-heartbeat.js
+RUN set -eux; \
+    matches="$(find / -name 'mcp-endpoint.controller.js' -not -path '*/node_modules/*' -type f 2>/dev/null)"; \
+    count="$(printf '%s\n' "$matches" | grep -c . || true)"; \
+    if [ "$count" -ne 1 ]; then \
+        echo "FATAL: expected exactly 1 mcp-endpoint.controller.js outside node_modules, found ${count}" >&2; \
+        exit 1; \
+    fi; \
+    node /tmp/tool-heartbeat.js "$matches"; \
+    node --check "$matches"; \
+    rm /tmp/tool-heartbeat.js
+
 # Drop back to the unprivileged user the upstream runner stage sets.
 USER appuser
 
 LABEL org.opencontainers.image.title="anythingmcp-patched" \
-      org.opencontainers.image.description="AnythingMCP with a configurable REST connector timeout (CONNECTOR_TIMEOUT_MS), anyOf-aware OpenAPI import, per-request nonce auth for GMGN, and SSE agent-stream collapsing." \
+      org.opencontainers.image.description="AnythingMCP with a configurable REST connector timeout (CONNECTOR_TIMEOUT_MS), anyOf-aware OpenAPI import, per-request nonce auth for GMGN, SSE agent-stream collapsing, and heartbeats during long tool calls." \
       org.opencontainers.image.base.name="docker.io/helpcodeai/anythingmcp:latest" \
       org.opencontainers.image.source="https://github.com/rt3722/anythingmcp-patched"
 
