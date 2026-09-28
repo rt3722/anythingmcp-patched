@@ -125,11 +125,23 @@ RUN set -eux; \
     node --check "$target"; \
     rm /tmp/request-nonce.js
 
+# ── REST engine: collapse agent SSE streams (Nansen /agent/*) ──────────────
+# Nansen's agent endpoints stream one SSE event per token; passed through raw,
+# long expert answers reach 100KB+ and get truncated/rejected by MCP clients.
+# See patches/sse-collapse.js. Only streams of {type: delta|tool_call|finish|
+# error} events are rewritten; every other response is returned unchanged.
+COPY patches/sse-collapse.js /tmp/sse-collapse.js
+RUN set -eux; \
+    target="$(cat /etc/anythingmcp-patched.path)"; \
+    node /tmp/sse-collapse.js "$target"; \
+    node --check "$target"; \
+    rm /tmp/sse-collapse.js
+
 # Drop back to the unprivileged user the upstream runner stage sets.
 USER appuser
 
 LABEL org.opencontainers.image.title="anythingmcp-patched" \
-      org.opencontainers.image.description="AnythingMCP with a configurable REST connector timeout (CONNECTOR_TIMEOUT_MS), anyOf-aware OpenAPI import, and per-request nonce auth for GMGN." \
+      org.opencontainers.image.description="AnythingMCP with a configurable REST connector timeout (CONNECTOR_TIMEOUT_MS), anyOf-aware OpenAPI import, per-request nonce auth for GMGN, and SSE agent-stream collapsing." \
       org.opencontainers.image.base.name="docker.io/helpcodeai/anythingmcp:latest" \
       org.opencontainers.image.source="https://github.com/rt3722/anythingmcp-patched"
 
