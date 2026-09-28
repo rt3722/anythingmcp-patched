@@ -13,6 +13,12 @@
 // Calls that finish before the first tick send nothing extra. The first tick
 // of each call logs AMCP_HEARTBEAT with the tool, whether a progressToken was
 // sent, and the client user-agent (no other headers, never auth).
+//
+// The public URL reaches the backend through the bundled Next.js server,
+// which gzips responses; gzip buffers small SSE events, so heartbeats never
+// left the container. Every MCP transport response is therefore wrapped so
+// text/event-stream responses carry `Cache-Control: no-cache, no-transform`,
+// which Next's compression middleware honours by skipping compression.
 'use strict';
 const fs = require('fs');
 const target = process.argv[2];
@@ -39,7 +45,32 @@ replaceOnce(
     'executeTool',
 );
 
+const hr = /transport\.handleRequest\(req, res, body\)/g;
+const hrCount = (src.match(hr) || []).length;
+if (hrCount < 1) { console.error('FATAL: no transport.handleRequest(req, res, body) calls found'); process.exit(1); }
+src = src.replace(hr, 'transport.handleRequest(req, __amcpNoTransform(res), body)');
+console.log(`wrapped ${hrCount} handleRequest call(s)`);
+
 const helper = `
+function __amcpNoTransform(res) {
+    if (!res || typeof res.writeHead !== 'function' || res.__amcpNoTransform) return res;
+    res.__amcpNoTransform = true;
+    const writeHead = res.writeHead;
+    res.writeHead = function (status, ...rest) {
+        const headers = rest.find((x) => x && typeof x === 'object' && !Array.isArray(x));
+        let ctype = res.getHeader?.('content-type');
+        if (headers) for (const k of Object.keys(headers)) if (k.toLowerCase() === 'content-type') ctype = headers[k];
+        if (String(ctype ?? '').includes('text/event-stream')) {
+            if (headers) {
+                for (const k of Object.keys(headers)) if (k.toLowerCase() === 'cache-control') delete headers[k];
+                headers['cache-control'] = 'no-cache, no-transform';
+            }
+            else res.setHeader('cache-control', 'no-cache, no-transform');
+        }
+        return writeHead.call(this, status, ...rest);
+    };
+    return res;
+}
 function __amcpHeartbeat(toolName, extra) {
     const every = Number(process.env.MCP_HEARTBEAT_MS ?? 10000);
     if (!extra || typeof extra.sendNotification !== 'function' || !(every > 0)) return () => { };
